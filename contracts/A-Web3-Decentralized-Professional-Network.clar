@@ -7,15 +7,21 @@
 (define-constant ERR_JOB_EXPIRED (err u106))
 (define-constant ERR_UNAUTHORIZED (err u107))
 (define-constant ERR_INVALID_REFERRAL (err u108))
+(define-constant ERR_SERVICE_NOT_AVAILABLE (err u109))
+(define-constant ERR_INSUFFICIENT_PAYMENT (err u110))
+(define-constant ERR_SERVICE_COMPLETED (err u111))
 
 (define-constant MIN_JOB_STAKE u1000000)
 (define-constant VOTING_PERIOD u144)
 (define-constant REFERRAL_REWARD u100000)
+(define-constant PLATFORM_FEE_PERCENT u5)
 
 (define-data-var contract-owner principal tx-sender)
 (define-data-var next-resume-id uint u1)
 (define-data-var next-job-id uint u1)
 (define-data-var next-referral-id uint u1)
+(define-data-var next-service-id uint u1)
+(define-data-var next-booking-id uint u1)
 
 (define-map resumes
   { resume-id: uint }
@@ -79,6 +85,39 @@
 (define-map endorsements
   { endorser: principal, endorsed: principal }
   { skill: (string-ascii 100), message: (string-ascii 200) }
+)
+
+(define-map services
+  {
+    service-id: uint
+  }
+  {
+    provider: principal,
+    title: (string-ascii 100),
+    description: (string-ascii 500),
+    category: (string-ascii 50),
+    price: uint,
+    delivery-days: uint,
+    active: bool,
+    total-orders: uint,
+    rating-sum: uint,
+    rating-count: uint
+  }
+)
+
+(define-map service-bookings
+  {
+    booking-id: uint
+  }
+  {
+    client: principal,
+    service-id: uint,
+    amount-escrowed: uint,
+    created-at: uint,
+    completed: bool,
+    client-rating: uint,
+    payment-released: bool
+  }
 )
 
 (define-public (create-resume (name (string-ascii 100)) (skills (string-ascii 500)) (experience (string-ascii 1000)) (education (string-ascii 500)))
@@ -322,4 +361,148 @@
 
 (define-read-only (get-job-vote (job-id uint) (voter principal))
   (map-get? job-votes { job-id: job-id, voter: voter })
+)
+
+(define-public (create-service (title (string-ascii 100)) (description (string-ascii 500)) (category (string-ascii 50)) (price uint) (delivery-days uint))
+  (let
+    (
+      (service-id (var-get next-service-id))
+    )
+    (asserts! (> price u0) ERR_INSUFFICIENT_PAYMENT)
+    (asserts! (> delivery-days u0) ERR_INVALID_VOTE)
+    (map-set services
+      { service-id: service-id }
+      {
+        provider: tx-sender,
+        title: title,
+        description: description,
+        category: category,
+        price: price,
+        delivery-days: delivery-days,
+        active: true,
+        total-orders: u0,
+        rating-sum: u0,
+        rating-count: u0
+      }
+    )
+    (var-set next-service-id (+ service-id u1))
+    (ok service-id)
+  )
+)
+
+(define-public (book-service (service-id uint))
+  (let
+    (
+      (service-data (unwrap! (map-get? services { service-id: service-id }) ERR_NOT_FOUND))
+      (booking-id (var-get next-booking-id))
+      (service-price (get price service-data))
+      (platform-fee (/ (* service-price PLATFORM_FEE_PERCENT) u100))
+      (total-amount (+ service-price platform-fee))
+      (current-block stacks-block-height)
+    )
+    (asserts! (get active service-data) ERR_SERVICE_NOT_AVAILABLE)
+    (asserts! (not (is-eq tx-sender (get provider service-data))) ERR_UNAUTHORIZED)
+    (try! (stx-transfer? total-amount tx-sender (as-contract tx-sender)))
+    (map-set service-bookings
+      { booking-id: booking-id }
+      {
+        client: tx-sender,
+        service-id: service-id,
+        amount-escrowed: total-amount,
+        created-at: current-block,
+        completed: false,
+        client-rating: u0,
+        payment-released: false
+      }
+    )
+    (map-set services
+      { service-id: service-id }
+      (merge service-data {
+        total-orders: (+ (get total-orders service-data) u1)
+      })
+    )
+    (var-set next-booking-id (+ booking-id u1))
+    (ok booking-id)
+  )
+)
+
+(define-public (complete-service (booking-id uint))
+  (let
+    (
+      (booking-data (unwrap! (map-get? service-bookings { booking-id: booking-id }) ERR_NOT_FOUND))
+      (service-data (unwrap! (map-get? services { service-id: (get service-id booking-data) }) ERR_NOT_FOUND))
+    )
+    (asserts! (is-eq tx-sender (get provider service-data)) ERR_UNAUTHORIZED)
+    (asserts! (not (get completed booking-data)) ERR_SERVICE_COMPLETED)
+    (map-set service-bookings
+      { booking-id: booking-id }
+      (merge booking-data { completed: true })
+    )
+    (ok true)
+  )
+)
+
+(define-public (release-payment (booking-id uint) (rating uint))
+  (let
+    (
+      (booking-data (unwrap! (map-get? service-bookings { booking-id: booking-id }) ERR_NOT_FOUND))
+      (service-data (unwrap! (map-get? services { service-id: (get service-id booking-data) }) ERR_NOT_FOUND))
+      (escrow-amount (get amount-escrowed booking-data))
+      (platform-fee (/ (* (get price service-data) PLATFORM_FEE_PERCENT) u100))
+      (provider-payment (- escrow-amount platform-fee))
+    )
+    (asserts! (is-eq tx-sender (get client booking-data)) ERR_UNAUTHORIZED)
+    (asserts! (get completed booking-data) ERR_SERVICE_NOT_AVAILABLE)
+    (asserts! (not (get payment-released booking-data)) ERR_ALREADY_EXISTS)
+    (asserts! (<= rating u5) ERR_INVALID_VOTE)
+    (try! (as-contract (stx-transfer? provider-payment tx-sender (get provider service-data))))
+    (map-set service-bookings
+      { booking-id: booking-id }
+      (merge booking-data {
+        payment-released: true,
+        client-rating: rating
+      })
+    )
+    (map-set services
+      { service-id: (get service-id booking-data) }
+      (merge service-data {
+        rating-sum: (+ (get rating-sum service-data) rating),
+        rating-count: (+ (get rating-count service-data) u1)
+      })
+    )
+    (ok provider-payment)
+  )
+)
+
+(define-public (toggle-service-status (service-id uint))
+  (let
+    (
+      (service-data (unwrap! (map-get? services { service-id: service-id }) ERR_NOT_FOUND))
+    )
+    (asserts! (is-eq tx-sender (get provider service-data)) ERR_UNAUTHORIZED)
+    (map-set services
+      { service-id: service-id }
+      (merge service-data { active: (not (get active service-data)) })
+    )
+    (ok (not (get active service-data)))
+  )
+)
+
+(define-read-only (get-service (service-id uint))
+  (map-get? services { service-id: service-id })
+)
+
+(define-read-only (get-service-booking (booking-id uint))
+  (map-get? service-bookings { booking-id: booking-id })
+)
+
+(define-read-only (get-service-rating (service-id uint))
+  (match (map-get? services { service-id: service-id })
+    service-data 
+      (if (> (get rating-count service-data) u0)
+        (some (/ (get rating-sum service-data) (get rating-count service-data)))
+        (some u0)
+      )
+    none
+  )
 )

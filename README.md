@@ -138,6 +138,50 @@ View endorsement details
 (get-endorsement 'SP1ENDORSER... 'SP1ENDORSED...)
 ```
 
+### 💼 Skills Marketplace
+
+#### `create-service`
+Offer freelance services
+```clarity
+(create-service "Smart Contract Audit" "Professional security audit..." "Development" u500000 u7)
+```
+
+#### `book-service`
+Book and pay for a service (includes 5% platform fee)
+```clarity
+(book-service u1)
+```
+
+#### `complete-service`
+Mark service as completed (provider only)
+```clarity
+(complete-service u1)
+```
+
+#### `release-payment`
+Release escrow payment with rating (client only)
+```clarity
+(release-payment u1 u5)  ; Release payment with 5-star rating
+```
+
+#### `toggle-service-status`
+Enable/disable service availability
+```clarity
+(toggle-service-status u1)
+```
+
+#### `get-service`
+View service details
+```clarity
+(get-service u1)
+```
+
+#### `get-service-rating`
+Get average service rating
+```clarity
+(get-service-rating u1)
+```
+
 ## 🎮 Usage Examples
 
 ### Creating Your Professional Identity
@@ -155,12 +199,18 @@ View endorsement details
 2. **Earn Influence**: Build reputation through thoughtful voting
 3. **Shape Community**: Help maintain high-quality job board
 
+### Monetizing Your Skills
+1. **Create Services**: List your freelance offerings with pricing
+2. **Secure Payments**: Automatic escrow protects both parties
+3. **Build Reputation**: Earn ratings and grow your service business
+
 ## 🔧 Technical Details
 
 ### Constants
 - `MIN_JOB_STAKE`: 1 STX minimum stake for job posting
 - `VOTING_PERIOD`: 144 blocks (~24 hours) for job voting
 - `REFERRAL_REWARD`: 0.1 STX reward for successful referrals
+- `PLATFORM_FEE_PERCENT`: 5% platform fee on marketplace transactions
 
 ### Error Codes
 - `u100`: Not authorized owner
@@ -172,6 +222,9 @@ View endorsement details
 - `u106`: Job expired
 - `u107`: Unauthorized
 - `u108`: Invalid referral
+- `u109`: Service not available
+- `u110`: Insufficient payment
+- `u111`: Service already completed
 
 ## 🛡️ Security Features
 
@@ -194,6 +247,7 @@ View endorsement details
 - ✅ Community-curated quality candidates
 - ✅ Transparent hiring metrics
 - ✅ Reduced recruitment fraud
+- ✅ Direct access to freelance services marketplace
 
 ### For the Network
 - ✅ Self-sustaining referral economy
