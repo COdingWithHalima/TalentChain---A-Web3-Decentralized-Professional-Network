@@ -119,6 +119,10 @@
     payment-released: bool
   }
 )
+(define-map job-applications
+  { job-id: uint, applicant: principal }
+  { applied-at: uint, status: (string-ascii 20) }
+)
 
 (define-public (create-resume (name (string-ascii 100)) (skills (string-ascii 500)) (experience (string-ascii 1000)) (education (string-ascii 500)))
   (let
@@ -505,4 +509,26 @@
       )
     none
   )
+)
+
+(define-public (apply-to-job (job-id uint))
+  (let
+    (
+      (job-data (unwrap! (map-get? jobs { job-id: job-id }) ERR_NOT_FOUND))
+      (current-block stacks-block-height)
+      (existing-application (map-get? job-applications { job-id: job-id, applicant: tx-sender }))
+    )
+    (asserts! (get active job-data) ERR_NOT_FOUND)
+    (asserts! (not (get filled job-data)) ERR_INVALID_REFERRAL)
+    (asserts! (is-none existing-application) ERR_ALREADY_EXISTS)
+    (map-set job-applications
+      { job-id: job-id, applicant: tx-sender }
+      { applied-at: current-block, status: "pending" }
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (get-job-application (job-id uint) (applicant principal))
+  (map-get? job-applications { job-id: job-id, applicant: applicant })
 )
