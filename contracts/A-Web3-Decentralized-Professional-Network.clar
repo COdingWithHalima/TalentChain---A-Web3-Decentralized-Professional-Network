@@ -15,6 +15,7 @@
 (define-constant VOTING_PERIOD u144)
 (define-constant REFERRAL_REWARD u100000)
 (define-constant PLATFORM_FEE_PERCENT u5)
+(define-constant DISPUTE_VOTING_PERIOD u144)
 
 (define-data-var contract-owner principal tx-sender)
 (define-data-var next-resume-id uint u1)
@@ -22,6 +23,7 @@
 (define-data-var next-referral-id uint u1)
 (define-data-var next-service-id uint u1)
 (define-data-var next-booking-id uint u1)
+(define-data-var next-dispute-id uint u1)
 
 (define-map resumes
   { resume-id: uint }
@@ -118,6 +120,24 @@
     client-rating: uint,
     payment-released: bool
   }
+)
+(define-map disputes
+  { dispute-id: uint }
+  {
+    booking-id: uint,
+    raiser: principal,
+    reason: (string-ascii 200),
+    votes-for-client: uint,
+    votes-for-provider: uint,
+    total-voters: uint,
+    created-at: uint,
+    resolved: bool,
+    outcome: bool
+  }
+)
+(define-map dispute-votes
+  { dispute-id: uint, voter: principal }
+  { vote-type: bool }
 )
 (define-map job-applications
   { job-id: uint, applicant: principal }
@@ -489,6 +509,112 @@
       (merge service-data { active: (not (get active service-data)) })
     )
     (ok (not (get active service-data)))
+  )
+)
+
+(define-public (raise-dispute (booking-id uint) (reason (string-ascii 200)))
+  (let
+    (
+      (booking-data (unwrap! (map-get? service-bookings { booking-id: booking-id }) ERR_NOT_FOUND))
+      (service-data (unwrap! (map-get? services { service-id: (get service-id booking-data) }) ERR_NOT_FOUND))
+      (dispute-id (var-get next-dispute-id))
+      (current-block stacks-block-height)
+    )
+    (asserts! (or (is-eq tx-sender (get client booking-data)) (is-eq tx-sender (get provider service-data))) ERR_UNAUTHORIZED)
+    (asserts! (get completed booking-data) ERR_INVALID_REFERRAL)
+    (asserts! (not (get payment-released booking-data)) ERR_ALREADY_EXISTS)
+    (map-set disputes
+      { dispute-id: dispute-id }
+      {
+        booking-id: booking-id,
+        raiser: tx-sender,
+        reason: reason,
+        votes-for-client: u0,
+        votes-for-provider: u0,
+        total-voters: u0,
+        created-at: current-block,
+        resolved: false,
+        outcome: false
+      }
+    )
+    (var-set next-dispute-id (+ dispute-id u1))
+    (ok dispute-id)
+  )
+)
+
+(define-public (vote-dispute (dispute-id uint) (vote-for-client bool))
+  (let
+    (
+      (dispute-data (unwrap! (map-get? disputes { dispute-id: dispute-id }) ERR_NOT_FOUND))
+      (booking-data (unwrap! (map-get? service-bookings { booking-id: (get booking-id dispute-data) }) ERR_NOT_FOUND))
+      (service-data (unwrap! (map-get? services { service-id: (get service-id booking-data) }) ERR_NOT_FOUND))
+      (current-block stacks-block-height)
+      (existing-vote (map-get? dispute-votes { dispute-id: dispute-id, voter: tx-sender }))
+    )
+    (asserts! (not (get resolved dispute-data)) ERR_SERVICE_COMPLETED)
+    (asserts! (< current-block (+ (get created-at dispute-data) DISPUTE_VOTING_PERIOD)) ERR_JOB_EXPIRED)
+    (asserts! (is-none existing-vote) ERR_ALREADY_VOTED)
+    (map-set dispute-votes
+      { dispute-id: dispute-id, voter: tx-sender }
+      { vote-type: vote-for-client }
+    )
+    (if vote-for-client
+      (map-set disputes
+        { dispute-id: dispute-id }
+        (merge dispute-data {
+          votes-for-client: (+ (get votes-for-client dispute-data) u1),
+          total-voters: (+ (get total-voters dispute-data) u1)
+        })
+      )
+      (map-set disputes
+        { dispute-id: dispute-id }
+        (merge dispute-data {
+          votes-for-provider: (+ (get votes-for-provider dispute-data) u1),
+          total-voters: (+ (get total-voters dispute-data) u1)
+        })
+      )
+    )
+    (ok true)
+  )
+)
+
+(define-public (resolve-dispute (dispute-id uint))
+  (let
+    (
+      (dispute-data (unwrap! (map-get? disputes { dispute-id: dispute-id }) ERR_NOT_FOUND))
+      (booking-data (unwrap! (map-get? service-bookings { booking-id: (get booking-id dispute-data) }) ERR_NOT_FOUND))
+      (service-data (unwrap! (map-get? services { service-id: (get service-id booking-data) }) ERR_NOT_FOUND))
+      (current-block stacks-block-height)
+    )
+    (asserts! (not (get resolved dispute-data)) ERR_SERVICE_COMPLETED)
+    (asserts! (>= current-block (+ (get created-at dispute-data) DISPUTE_VOTING_PERIOD)) ERR_JOB_EXPIRED)
+    (let
+      (
+        (client-votes (get votes-for-client dispute-data))
+        (provider-votes (get votes-for-provider dispute-data))
+        (outcome (>= client-votes provider-votes))
+        (provider-payment (get price service-data))
+        (platform-fee (/ (* provider-payment PLATFORM_FEE_PERCENT) u100))
+        (payment-to-provider (if outcome u0 (- provider-payment platform-fee)))
+        (payment-to-client (if outcome (- provider-payment platform-fee) provider-payment))
+      )
+      (map-set disputes
+        { dispute-id: dispute-id }
+        (merge dispute-data {
+          resolved: true,
+          outcome: outcome
+        })
+      )
+      (map-set service-bookings
+        { booking-id: (get booking-id dispute-data) }
+        (merge booking-data {
+          payment-released: true
+        })
+      )
+      (try! (as-contract (stx-transfer? payment-to-provider tx-sender (get provider service-data))))
+      (try! (as-contract (stx-transfer? payment-to-client tx-sender (get client booking-data))))
+      (ok outcome)
+    )
   )
 )
 
