@@ -24,6 +24,7 @@
 (define-data-var next-service-id uint u1)
 (define-data-var next-booking-id uint u1)
 (define-data-var next-dispute-id uint u1)
+(define-data-var next-cert-id uint u1)
 
 (define-map resumes
   { resume-id: uint }
@@ -142,6 +143,17 @@
 (define-map job-applications
   { job-id: uint, applicant: principal }
   { applied-at: uint, status: (string-ascii 20) }
+)
+
+(define-map certifications
+  { cert-id: uint }
+  {
+    issuer: principal,
+    recipient: principal,
+    skill: (string-ascii 100),
+    description: (string-ascii 200),
+    issued-at: uint
+  }
 )
 
 (define-public (create-resume (name (string-ascii 100)) (skills (string-ascii 500)) (experience (string-ascii 1000)) (education (string-ascii 500)))
